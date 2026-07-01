@@ -1,0 +1,6 @@
+{
+  "executive": {"production_vs_plan": 98.7, "oee": 78.6, "otif": 92.1, "economic_loss_usd": 1420000, "margin": 23.4, "critical_risks": 3},
+  "operational": {"total_today": 1248690, "oee_avg": 78.6, "orders_progress": 23, "scrap": 1.82, "alerts": 14},
+  "financial": {"sales_mtd": 24800000, "forecast_mtd": 26100000, "gross_margin": 21.6, "inventory_value": 38600000, "immobilized_inventory": 12600000, "scrap_cost": 1240000},
+  "commercial": {"orders_at_risk": 23, "otif": 93.5, "service_level": 96.5, "priority_clients": 18}
+}
