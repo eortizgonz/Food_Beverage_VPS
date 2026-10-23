@@ -49,3 +49,7 @@ Configura `MAIL_USERNAME` y `MAIL_APP_PASSWORD` en `.env`. Se utiliza Gmail SMTP
 ## Siguiente etapa
 
 Sustituir `data/production_floor.json` por datos de historiador, PLC/MES o SAP y agregar autenticación, persistencia de eventos, catálogo de causas, auditoría y flujos de aprobación.
+
+## Despliegue Docker en VPS
+
+El proyecto incluye `compose.yaml` para ejecutar la aplicación, PostgreSQL 18 con pgvector y las migraciones automáticas. Consulta `DEPLOY_VPS.md` para configuración, validación, actualizaciones y copias de seguridad.
