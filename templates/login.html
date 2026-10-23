@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Acceso · Food Plant AI Copilot</title>
+  <style>
+    :root{--nav:#102b21;--green:#18794e;--bright:#33c27f;--ink:#17251e;--muted:#637069;--line:#dbe4df;--danger:#c93737}
+    *{box-sizing:border-box}body{margin:0;min-height:100vh;font:14px/1.45 Inter,Segoe UI,Arial,sans-serif;color:var(--ink);background:radial-gradient(circle at 75% 20%,#dff5e9 0,transparent 34%),linear-gradient(135deg,#f7faf8,#e8f1ed);display:grid;place-items:center;padding:24px}.auth{width:min(410px,100%)}.identity{text-align:center;margin-bottom:18px}.logo{width:155px;height:115px;margin:auto;display:block;object-fit:contain;filter:drop-shadow(0 10px 16px #0b4f8a25)}.identity h1{font-size:23px;margin:7px 0 2px}.identity p{margin:0;color:var(--muted)}.card{background:#fff;border:1px solid var(--line);border-radius:20px;padding:24px;box-shadow:0 24px 60px rgba(16,43,33,.12)}.switch{display:grid;grid-template-columns:1fr 1fr;background:#edf3f0;border-radius:11px;padding:4px;margin-bottom:20px}.switch button{border:0;background:transparent;border-radius:8px;padding:9px;font-weight:700;cursor:pointer;color:var(--muted)}.switch button.active{background:#fff;color:var(--green);box-shadow:0 2px 8px #102b2115}h2{font-size:21px;margin:0 0 3px}.intro{color:var(--muted);margin:0 0 17px}.field{margin:12px 0}.field label{display:block;font-size:12px;font-weight:750;margin-bottom:5px}.field input{width:100%;border:1px solid #cad8d1;border-radius:10px;padding:12px 13px;outline:none;background:#fbfdfc}.field input:focus{border-color:var(--bright);box-shadow:0 0 0 3px #33c27f20}.remember{display:flex;gap:8px;align-items:center;color:var(--muted);font-size:12px;margin:12px 0}.submit{width:100%;border:0;border-radius:11px;background:linear-gradient(90deg,var(--green),var(--bright));color:#fff;padding:12px;font-weight:800;cursor:pointer;margin-top:5px}.submit:disabled{opacity:.65;cursor:wait}.message{display:none;border-radius:9px;padding:10px;margin-top:13px;font-size:12px}.message.error{display:block;background:#fde7e7;color:var(--danger)}.message.ok{display:block;background:#dff5e9;color:var(--green)}.register-only{display:none}.register-mode .register-only{display:block}.security{text-align:center;color:var(--muted);font-size:11px;margin:15px}.security b{color:var(--green)}
+  </style>
+</head>
+<body>
+<main class="auth">
+  <header class="identity"><img class="logo" src="{{ url_for('static', filename='images/zyma360-logo.png') }}" alt="ZYMA 360 Smart Digital Manufacturing"><h1>Food Plant AI Copilot</h1><p>Acceso seguro al piso de producción</p></header>
+  <section class="card" id="card">
+    <div class="switch"><button class="active" data-mode="login">Iniciar sesión</button><button data-mode="register">Crear usuario</button></div>
+    <h2 id="title">Bienvenido</h2><p class="intro" id="intro">Ingresa con tu username o correo.</p>
+    <form id="authForm">
+      <div class="field register-only"><label for="name">Nombre completo</label><input id="name" name="name" maxlength="120" autocomplete="name"></div>
+      <div class="field register-only"><label for="email">Correo electrónico</label><input id="email" name="email" type="email" maxlength="255" autocomplete="email"></div>
+      <div class="field"><label for="identity" id="identityLabel">Username o correo</label><input id="identity" name="identity" maxlength="255" autocomplete="username" required autofocus></div>
+      <div class="field"><label for="password">Contraseña</label><input id="password" name="password" type="password" minlength="10" autocomplete="current-password" required></div>
+      <label class="remember" id="rememberRow"><input id="remember" type="checkbox"> Mantener sesión</label>
+      <button class="submit" id="submit" type="submit">Iniciar sesión</button>
+      <p id="forgotLink" style="text-align:center;margin:14px 0 0"><a href="/forgot-password" style="color:var(--green);font-size:12px;font-weight:700;text-decoration:none">¿Olvidaste tu contraseña?</a></p>
+      <div class="message" id="message" role="alert"></div>
+    </form>
+  </section>
+  <p class="security"><b>● Conexión protegida</b> · Las contraseñas se almacenan como hash</p>
+</main>
+<script>
+const card=document.getElementById('card'),form=document.getElementById('authForm'),message=document.getElementById('message'),submit=document.getElementById('submit');let mode='login';
+document.querySelectorAll('[data-mode]').forEach(button=>button.addEventListener('click',()=>{mode=button.dataset.mode;document.querySelectorAll('[data-mode]').forEach(x=>x.classList.toggle('active',x===button));card.classList.toggle('register-mode',mode==='register');document.getElementById('title').textContent=mode==='login'?'Bienvenido':'Crea tu cuenta';document.getElementById('intro').textContent=mode==='login'?'Ingresa con tu username o correo.':'Registra un usuario para acceder al copiloto.';document.getElementById('identityLabel').textContent=mode==='login'?'Username o correo':'Username';document.getElementById('rememberRow').style.display=mode==='login'?'flex':'none';document.getElementById('forgotLink').style.display=mode==='login'?'block':'none';document.getElementById('password').autocomplete=mode==='login'?'current-password':'new-password';submit.textContent=mode==='login'?'Iniciar sesión':'Crear usuario';message.className='message';}));
+form.addEventListener('submit',async event=>{event.preventDefault();message.className='message';submit.disabled=true;const payload=mode==='login'?{identity:form.identity.value,password:form.password.value,remember:document.getElementById('remember').checked}:{name:form.name.value,email:form.email.value,username:form.identity.value,password:form.password.value};try{const response=await fetch(mode==='login'?'/api/auth/login':'/api/users',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});const result=await response.json();if(!response.ok)throw new Error(result.error||'No fue posible completar la operación');if(mode==='register'){message.textContent='Usuario creado. Iniciando sesión…';message.className='message ok';const login=await fetch('/api/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({identity:payload.username,password:payload.password})});if(!login.ok)throw new Error('Usuario creado. Inicia sesión con tus credenciales.')}location.href='/'}catch(error){message.textContent=error.message;message.className='message error'}finally{submit.disabled=false}});
+</script>
+</body>
+</html>

@@ -1,0 +1,38 @@
+{
+  "context": {"plant": "Planta Andina", "area": "Empaque", "line": "Línea 3", "shift": "Turno A · 06:00–14:00", "supervisor": "Laura Gómez", "order": "OP-450021", "product": "Bebida de fruta PET 1 L", "lot": "FB-2405-L3"},
+  "shift": {"plan_units": 48000, "actual_units": 35120, "completion_pct": 73.2, "target_rate": 120, "current_rate": 103.4, "projected_end": "14:27", "status": "risk"},
+  "oee": {"oee": 72.9, "availability": 88.4, "performance": 84.1, "quality": 98.1},
+  "quality": {
+    "status": "hold", "label": "Lote en retención preventiva", "good_units": 34453, "scrap_units": 667, "scrap_pct": 1.9,
+    "checks": [
+      {"name": "Peso neto", "value": "1008 g", "range": "990–1010 g", "status": "warning"},
+      {"name": "Temperatura", "value": "4.1 °C", "range": "2–6 °C", "status": "ok"},
+      {"name": "Brix", "value": "11.8 °Bx", "range": "11.5–12.2 °Bx", "status": "ok"},
+      {"name": "Detector de metales", "value": "Conforme", "range": "Test cada 2 h", "status": "ok"}
+    ]
+  },
+  "downtime": {
+    "current_state": "Produciendo con velocidad reducida", "minutes_today": 47,
+    "events": [
+      {"time": "10:42", "equipment": "Empacadora L3", "cause": "Atasco de film", "minutes": 18, "status": "closed"},
+      {"time": "09:16", "equipment": "Llenadora L3", "cause": "Ajuste de dosificador", "minutes": 14, "status": "closed"},
+      {"time": "07:35", "equipment": "Transportador", "cause": "Microparadas repetitivas", "minutes": 15, "status": "monitoring"}
+    ]
+  },
+  "hourly": [
+    {"hour": "06", "plan": 6000, "actual": 5850}, {"hour": "07", "plan": 6000, "actual": 5620},
+    {"hour": "08", "plan": 6000, "actual": 5340}, {"hour": "09", "plan": 6000, "actual": 4890},
+    {"hour": "10", "plan": 6000, "actual": 5010}, {"hour": "11", "plan": 6000, "actual": 5420},
+    {"hour": "12", "plan": 6000, "actual": 2990}, {"hour": "13", "plan": 6000, "actual": 0}
+  ],
+  "alerts": [
+    {"severity": "critical", "title": "Riesgo de incumplir el turno", "detail": "Proyección de cierre 27 minutos después de la meta.", "owner": "Supervisor"},
+    {"severity": "warning", "title": "Peso próximo al límite superior", "detail": "Realizar cinco muestras y verificar dosificador.", "owner": "Calidad"},
+    {"severity": "info", "title": "Microparadas recurrentes", "detail": "Transportador acumula 15 minutos durante el turno.", "owner": "Mantenimiento"}
+  ],
+  "actions": [
+    {"priority": "critical", "task": "Verificar dosificador y tomar 5 muestras", "owner": "Calidad", "due": "12 min", "status": "Abierta"},
+    {"priority": "warning", "task": "Inspeccionar sensor del transportador", "owner": "Mantenimiento", "due": "30 min", "status": "Asignada"},
+    {"priority": "info", "task": "Rebalancear personal hacia empaque", "owner": "Supervisor", "due": "Este turno", "status": "Pendiente"}
+  ]
+}
