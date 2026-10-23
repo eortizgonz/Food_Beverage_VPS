@@ -47,6 +47,7 @@ El servicio `migrate` crea las tablas y carga los datos maestros antes de inicia
 docker compose ps
 docker compose logs migrate
 docker compose logs --tail=100 app
+docker compose logs --tail=100 collector
 curl http://127.0.0.1:5000/health
 ```
 
@@ -80,6 +81,7 @@ cat backup/ARCHIVO.dump | docker compose exec -T db sh -c 'pg_restore -U "$POSTG
 
 ```bash
 docker compose logs -f app
+docker compose logs -f collector
 docker compose restart app
 docker compose stop
 docker compose up -d

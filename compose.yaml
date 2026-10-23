@@ -62,6 +62,37 @@ services:
       start_period: 20s
     networks: [backend]
 
+  collector:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command:
+      - python
+      - -m
+      - flask
+      - --app
+      - app
+      - run-reading-collector
+      - --interval-seconds
+      - ${PREDICTIVE_CAPTURE_INTERVAL:-900}
+    restart: unless-stopped
+    env_file: [.env]
+    environment:
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_ADMIN_NAME: postgres
+      DB_SSLMODE: disable
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+      app:
+        condition: service_healthy
+    healthcheck:
+      disable: true
+    networks: [backend]
+
 volumes:
   postgres_data:
     name: food_beverage_postgres_data

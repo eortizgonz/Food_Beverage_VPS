@@ -46,6 +46,8 @@ Configura `MAIL_USERNAME` y `MAIL_APP_PASSWORD` en `.env`. Se utiliza Gmail SMTP
 - `POST /api/users`: creación segura de usuarios.
 - `GET /health`: comprobación del servicio.
 
+El servicio Docker `collector` inserta una lectura simulada por máquina cada 900 segundos (15 minutos). El dashboard consulta nuevas lecturas sin escribir en la base. La frecuencia se configura con `PREDICTIVE_CAPTURE_INTERVAL`.
+
 ## Siguiente etapa
 
 Sustituir `data/production_floor.json` por datos de historiador, PLC/MES o SAP y agregar autenticación, persistencia de eventos, catálogo de causas, auditoría y flujos de aprobación.

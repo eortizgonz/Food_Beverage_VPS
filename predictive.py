@@ -1,96 +1,178 @@
 import math
 import random
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
+
+from database import get_connection
 
 
-MACHINES = [
-    ("RM-101", "Recepción de materia prima", "Transportador de recepción"),
-    ("WS-110", "Lavado", "Lavadora rotativa"),
-    ("CR-120", "Preparación", "Triturador industrial"),
-    ("MX-130", "Mezcla", "Mezclador de alto corte"),
-    ("PS-140", "Proceso térmico", "Pasteurizador tubular"),
-    ("HM-150", "Homogeneización", "Homogeneizador"),
-    ("TK-160", "Almacenamiento", "Tanque de proceso"),
-    ("PU-170", "Transferencia", "Bomba sanitaria"),
-    ("FL-210", "Llenado", "Llenadora rotativa"),
-    ("CP-220", "Tapado", "Taponadora"),
-    ("LB-230", "Etiquetado", "Etiquetadora"),
-    ("PK-240", "Empaque", "Empacadora flow-pack"),
-    ("CS-250", "Encajado", "Encajonadora automática"),
-    ("PL-260", "Paletizado", "Paletizador robotizado"),
-    ("CV-310", "Transporte", "Banda transportadora"),
-    ("AC-320", "Servicios", "Compresor de aire"),
-    ("CH-330", "Refrigeración", "Chiller de proceso"),
-    ("BL-340", "Servicios", "Caldera de vapor"),
-    ("CIP-350", "Limpieza", "Sistema CIP"),
-    ("EX-360", "Extracción", "Extractor de aire"),
+WEIGHTS = {
+    "usage": 0.12, "vibration": 0.25, "temperature": 0.20,
+    "current": 0.17, "rpm": 0.14, "pressure": 0.12,
+}
+LABELS = {
+    "usage": "Horas de uso", "vibration": "Vibración", "temperature": "Temperatura",
+    "current": "Corriente", "rpm": "Desviación de RPM", "pressure": "Presión",
+}
+CONDITION_PROFILES = [
+    0.28, 0.82, 0.48, 0.94, 0.36, 0.69, 0.22, 0.57, 0.76, 0.31,
+    0.44, 0.88, 0.25, 0.63, 0.72, 0.39, 0.91, 0.53, 0.18, 0.66,
 ]
 
-WEIGHTS = {"vibration": 0.25, "temperature": 0.20, "current": 0.17, "rpm": 0.14, "usage": 0.12, "pressure": 0.12}
-LABELS = {"vibration": "Vibración", "temperature": "Temperatura", "current": "Corriente", "rpm": "RPM", "usage": "Uso", "pressure": "Presión"}
+MANUALS = {
+    "Transportador": (
+        ["Desalineación de banda o cadena", "Rodamientos con lubricación insuficiente", "Acumulación de producto en guías"],
+        ["Inspeccionar tensión y alineación", "Verificar rodamientos y lubricación", "Limpiar guías según el procedimiento sanitario"],
+    ),
+    "Bomba": (
+        ["Cavitación o entrada de aire", "Desgaste de sello mecánico", "Restricción en succión"],
+        ["Confirmar presión y nivel de alimentación", "Inspeccionar sello y acople", "Verificar válvulas y filtros sanitarios"],
+    ),
+    "Llenadora": (
+        ["Desgaste del tren de accionamiento", "Dosificador fuera de ajuste", "Acumulación o fricción en carrusel"],
+        ["Validar dosificación y velocidad", "Inspeccionar transmisión y rodamientos", "Confirmar limpieza y lubricación autorizada"],
+    ),
+    "Sistema CIP": (
+        ["Bomba CIP trabajando fuera de curva", "Restricción de retorno", "Temperatura o presión fuera de régimen"],
+        ["Validar caudal, presión y temperatura", "Inspeccionar bomba y válvulas", "Verificar secuencia CIP y retorno"],
+    ),
+}
 
 
-def clamp(value, low=0, high=100):
-    return max(low, min(high, value))
+def rule_score(ratio):
+    ratio = max(0.0, ratio)
+    if ratio <= 0.60:
+        return 0.0
+    if ratio <= 0.80:
+        return (ratio - 0.60) / 0.20 * 25.0
+    if ratio <= 1.00:
+        return 25.0 + (ratio - 0.80) / 0.20 * 45.0
+    if ratio <= 1.15:
+        return 70.0 + (ratio - 1.00) / 0.15 * 30.0
+    return 100.0
 
 
-def risk_level(score):
-    if score >= 70:
-        return "critical"
-    if score >= 45:
-        return "warning"
-    return "healthy"
-
-
-def simulated_machines():
-    result = []
-    for index, (machine_id, area, name) in enumerate(MACHINES):
-        rng = random.Random(360_000 + index)
-        age = rng.uniform(0.22, 0.96)
-        vibration = round(1.2 + age * 6.9 + rng.uniform(-0.7, 0.7), 2)
-        temperature = round(42 + age * 54 + rng.uniform(-6, 6), 1)
-        current = round(12 + age * 42 + rng.uniform(-4, 4), 1)
-        nominal_rpm = rng.choice([720, 960, 1200, 1450, 1750])
-        rpm = int(nominal_rpm * (1 + rng.uniform(-0.13, 0.1)))
-        usage_hours = int(900 + age * 8500 + rng.uniform(-300, 300))
-        pressure = round(1.1 + age * 3.1 + rng.uniform(-0.35, 0.35), 2)
-        normalized = {
-            "vibration": clamp((vibration - 1.5) / 6.0 * 100),
-            "temperature": clamp((temperature - 45) / 55 * 100),
-            "current": clamp((current - 12) / 45 * 100),
-            "rpm": clamp(abs(rpm - nominal_rpm) / nominal_rpm * 500),
-            "usage": clamp(usage_hours / 10000 * 100),
-            "pressure": clamp((pressure - 1.2) / 3.5 * 100),
-        }
-        score = round(sum(normalized[key] * WEIGHTS[key] for key in WEIGHTS), 1)
-        level = risk_level(score)
-        factors = sorted(
-            ({"key": key, "label": LABELS[key], "score": round(value, 1), "contribution": round(value * WEIGHTS[key], 1)} for key, value in normalized.items()),
-            key=lambda item: item["contribution"], reverse=True,
-        )
-        days = max(2, int(45 * math.pow(max(1, 100 - score) / 100, 1.7)))
-        action = {
-            "critical": "Programar inspección prioritaria, validar condición física y preparar mantenimiento en la próxima ventana disponible.",
-            "warning": "Aumentar frecuencia de monitoreo y revisar los dos factores con mayor contribución.",
-            "healthy": "Mantener plan preventivo y frecuencia normal de monitoreo.",
-        }[level]
-        result.append({
-            "id": machine_id, "name": name, "area": area, "usage_hours": usage_hours,
-            "vibration": vibration, "temperature": temperature, "current": current,
-            "rpm": rpm, "nominal_rpm": nominal_rpm, "pressure": pressure,
-            "risk": score, "status": level, "factors": factors,
-            "recommended_action": action, "intervention_horizon_days": days,
-        })
-    return sorted(result, key=lambda machine: machine["risk"], reverse=True)
-
-
-def predictive_payload():
-    machines = simulated_machines()
-    counts = {level: sum(machine["status"] == level for machine in machines) for level in ("healthy", "warning", "critical")}
-    return {
-        "generated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
-        "model": "Modelo demostrativo ponderado v1",
-        "weights": [{"key": key, "label": LABELS[key], "weight": int(value * 100)} for key, value in WEIGHTS.items()],
-        "summary": {**counts, "average_risk": round(sum(machine["risk"] for machine in machines) / len(machines), 1)},
-        "recommended": machines[0], "machines": machines,
+def calculate_risk(machine, values):
+    ratios = {
+        "usage": values["usage_hours"] / machine["max_usage_hours"],
+        "vibration": values["vibration"] / machine["max_vibration"],
+        "temperature": values["temperature"] / machine["max_temperature"],
+        "current": values["current"] / machine["rated_current"],
+        "rpm": abs(values["rpm"] - machine["nominal_rpm"]) / max(machine["nominal_rpm"], 1) / 0.20,
+        "pressure": values["pressure"] / max(machine["max_pressure"], 0.01),
     }
+    scores = {key: rule_score(value) for key, value in ratios.items()}
+    contributions = {key: scores[key] * WEIGHTS[key] for key in scores}
+    risk = sum(contributions.values())
+    exceeded = sum(value >= 1.0 for value in ratios.values())
+    if any(value >= 1.15 for value in ratios.values()):
+        risk = max(risk, 75.0)
+    elif exceeded >= 2:
+        risk = max(risk, 70.0)
+    elif exceeded == 1:
+        risk = max(risk, 45.0)
+    risk = round(min(99.0, max(1.0, risk)), 1)
+    status = "critical" if risk >= 70 else "warning" if risk >= 40 else "healthy"
+    factors = sorted(
+        ({"key": key, "label": LABELS[key], "score": round(scores[key], 1), "contribution": round(contributions[key], 1)} for key in scores),
+        key=lambda item: item["contribution"], reverse=True,
+    )
+    explanation = f"Factores principales: {factors[0]['label']} ({factors[0]['contribution']} puntos) y {factors[1]['label']} ({factors[1]['contribution']} puntos)."
+    return risk, status, explanation, factors
+
+
+def bounded(value, lower, upper, decimals=2):
+    return round(max(lower, min(upper, value)), decimals)
+
+
+def values_from_condition(machine, level, rng, usage_hours=None, phase=0.0):
+    load = max(0.12, min(1.08, level + math.sin(phase) * 0.035 + rng.gauss(0, 0.025)))
+    if rng.random() < 0.025:
+        load = min(1.12, load + rng.uniform(0.06, 0.14))
+    direction = -1 if rng.random() < 0.5 else 1
+    hours = usage_hours if usage_hours is not None else machine["max_usage_hours"] * (0.30 + load * 0.70)
+    return {
+        "usage_hours": bounded(hours, 0, machine["max_usage_hours"] * 1.15, 1),
+        "vibration": bounded(machine["max_vibration"] * (0.30 + load * 0.72) + rng.gauss(0, machine["max_vibration"] * 0.015), 0, machine["max_vibration"] * 1.15),
+        "temperature": bounded(machine["max_temperature"] * (0.42 + load * 0.61) + rng.gauss(0, machine["max_temperature"] * 0.01), 0, machine["max_temperature"] * 1.15, 1),
+        "current": bounded(machine["rated_current"] * (0.36 + load * 0.68) + rng.gauss(0, machine["rated_current"] * 0.012), 0, machine["rated_current"] * 1.15, 1),
+        "rpm": bounded(machine["nominal_rpm"] * (1 + direction * load * 0.20) + rng.gauss(0, max(machine["nominal_rpm"] * 0.008, 0.1)), machine["nominal_rpm"] * 0.72, machine["nominal_rpm"] * 1.28, 0),
+        "pressure": bounded(machine["max_pressure"] * (0.34 + load * 0.70) + rng.gauss(0, machine["max_pressure"] * 0.012), 0, machine["max_pressure"] * 1.15),
+    }
+
+
+def insert_reading(cursor, machine, recorded_at, values):
+    risk, status, explanation, _ = calculate_risk(machine, values)
+    cursor.execute(
+        """INSERT INTO machine_readings
+        (machine_id,recorded_at,usage_hours,vibration,temperature,current_amps,rpm,pressure,failure_probability,health_status,explanation)
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT (machine_id,recorded_at) DO NOTHING""",
+        (machine["id"], recorded_at, values["usage_hours"], values["vibration"], values["temperature"], values["current"], values["rpm"], values["pressure"], risk, status, explanation),
+    )
+
+
+def append_snapshot(minimum_interval_seconds=10):
+    now = datetime.now(timezone.utc)
+    seed_interval = max(1, minimum_interval_seconds)
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT * FROM machines WHERE active ORDER BY id")
+            machines = cursor.fetchall()
+            for index, machine in enumerate(machines):
+                cursor.execute("SELECT * FROM machine_readings WHERE machine_id=%s ORDER BY recorded_at DESC LIMIT 1", (machine["id"],))
+                latest = cursor.fetchone()
+                if not latest:
+                    for hour in range(24, 0, -1):
+                        historical_at = now - timedelta(hours=hour)
+                        history_rng = random.Random(2026 + machine["id"] * 100 + hour)
+                        progress = (24 - hour) / 24
+                        history_level = CONDITION_PROFILES[index % len(CONDITION_PROFILES)] * (0.78 + 0.22 * progress)
+                        history_usage = machine["max_usage_hours"] * (0.30 + history_level * 0.70)
+                        insert_reading(cursor, machine, historical_at, values_from_condition(machine, history_level, history_rng, history_usage, historical_at.timestamp() / 86400 * math.tau))
+                if latest and (now - latest["recorded_at"]).total_seconds() < minimum_interval_seconds:
+                    continue
+                rng = random.Random(int(now.timestamp() // seed_interval) + machine["id"] * 2026)
+                level = CONDITION_PROFILES[index % len(CONDITION_PROFILES)]
+                usage = None
+                if latest:
+                    elapsed = max(0, (now - latest["recorded_at"]).total_seconds() / 3600)
+                    usage = latest["usage_hours"] + elapsed
+                    observed = max(latest["vibration"] / machine["max_vibration"], latest["temperature"] / machine["max_temperature"])
+                    level = max(0.1, min(1.08, (observed - 0.30) / 0.72 + rng.gauss(0, 0.018)))
+                insert_reading(cursor, machine, now, values_from_condition(machine, level, rng, usage, now.timestamp() / 86400 * math.tau))
+
+
+def manual_diagnosis(machine, factors):
+    causes, actions = MANUALS.get(machine["machine_type"], (
+        ["Desgaste mecánico progresivo", "Carga operacional fuera del régimen esperado", "Sensor o elemento de transmisión con desviación"],
+        ["Validar las lecturas con instrumento patrón", "Inspeccionar rodamientos, acoples y transmisión", "Revisar el plan preventivo y la ventana de intervención"],
+    ))
+    return {"diagnosis": f"{factors[0]['label']} y {factors[1]['label']} concentran el mayor aporte al índice.", "causes": causes, "actions": actions, "source": f"Perfil técnico simulado · {machine['machine_type']}"}
+
+
+def predictive_payload(refresh=False):
+    if refresh:
+        append_snapshot()
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute("""
+                SELECT DISTINCT ON (m.id) m.*, r.recorded_at, r.usage_hours, r.vibration,
+                    r.temperature, r.current_amps, r.rpm, r.pressure,
+                    r.failure_probability, r.health_status, r.explanation
+                FROM machines m JOIN machine_readings r ON r.machine_id=m.id
+                WHERE m.active ORDER BY m.id, r.recorded_at DESC
+            """)
+            rows = cursor.fetchall()
+            machines = []
+            for row in rows:
+                values = {"usage_hours": row["usage_hours"], "vibration": row["vibration"], "temperature": row["temperature"], "current": row["current_amps"], "rpm": row["rpm"], "pressure": row["pressure"]}
+                _, _, _, factors = calculate_risk(row, values)
+                cursor.execute("SELECT count(*) AS samples, avg(failure_probability) AS average, min(failure_probability) AS minimum, max(failure_probability) AS maximum FROM machine_readings WHERE machine_id=%s AND recorded_at >= %s", (row["id"], row["recorded_at"] - timedelta(hours=24)))
+                trend = cursor.fetchone()
+                actions = {"critical": "Programar inspección prioritaria y preparar mantenimiento en la próxima ventana disponible.", "warning": "Aumentar la frecuencia de monitoreo y revisar los factores dominantes.", "healthy": "Mantener el plan preventivo y la frecuencia normal de monitoreo."}
+                machine = {"id": row["code"], "name": row["name"], "type": row["machine_type"], "area": row["area"], **values, "risk": row["failure_probability"], "status": row["health_status"], "explanation": row["explanation"], "recorded_at": row["recorded_at"], "factors": factors, "manual": manual_diagnosis(row, factors), "recommended_action": actions[row["health_status"]], "intervention_horizon_days": max(2, int(45 * math.pow(max(1, 100 - row["failure_probability"]) / 100, 1.7))), "trend_24h": {"samples": trend["samples"], "average": round(float(trend["average"] or 0), 1), "minimum": round(float(trend["minimum"] or 0), 1), "maximum": round(float(trend["maximum"] or 0), 1)}}
+                machines.append(machine)
+    machines.sort(key=lambda item: item["risk"], reverse=True)
+    if not machines:
+        return {"generated_at": None, "model": "Índice demostrativo por umbrales ponderados", "weights": [{"key": key, "label": LABELS[key], "weight": int(value * 100)} for key, value in WEIGHTS.items()], "summary": {"healthy": 0, "warning": 0, "critical": 0, "total": 0, "average_risk": 0}, "recommended": None, "machines": []}
+    counts = {level: sum(machine["status"] == level for machine in machines) for level in ("healthy", "warning", "critical")}
+    return {"generated_at": max(machine["recorded_at"] for machine in machines).isoformat(), "model": "Índice demostrativo por umbrales ponderados", "weights": [{"key": key, "label": LABELS[key], "weight": int(value * 100)} for key, value in WEIGHTS.items()], "summary": {**counts, "total": len(machines), "average_risk": round(sum(machine["risk"] for machine in machines) / len(machines), 1)}, "recommended": machines[0], "machines": machines}

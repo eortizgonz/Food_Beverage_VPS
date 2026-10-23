@@ -5,11 +5,13 @@ import os
 import random
 import re
 import secrets
+import time
 from datetime import datetime, timedelta, timezone
 from functools import wraps
 from pathlib import Path
 
 import psycopg
+import click
 from flask import Flask, jsonify, redirect, render_template, request, session, url_for
 from werkzeug.security import check_password_hash, generate_password_hash
 
@@ -26,7 +28,7 @@ from database import (
     password_reset_token_is_valid,
 )
 from mailer import mail_configured, send_password_reset
-from predictive import predictive_payload
+from predictive import append_snapshot, predictive_payload
 
 
 BASE = Path(__file__).parent
@@ -116,21 +118,28 @@ def auth_login():
     try:
         user = find_user_for_login(identity)
     except RuntimeError:
+        app.logger.error("Login rejected: database is not configured")
         return error("La base de datos no está configurada. Revisa DB_PASSWORD en .env.", 503)
     except psycopg.Error:
+        app.logger.exception("Login rejected: database connection error")
         return error("No fue posible conectar con la base de datos.", 503)
     if not user or not check_password_hash(user["password_hash"], password):
+        app.logger.warning("Login rejected: invalid credentials")
         return error("Credenciales incorrectas.", 401)
     session.clear()
     session["user_id"] = user["id"]
     session["user_name"] = user["name"]
     session.permanent = bool(body.get("remember"))
+    app.logger.info("Login successful: user_id=%s", user["id"])
     return jsonify({"id": user["id"], "name": user["name"], "username": user["username"]})
 
 
 @app.post("/api/auth/logout")
 def auth_logout():
+    user_id = session.get("user_id")
     session.clear()
+    if user_id:
+        app.logger.info("Logout successful: user_id=%s", user_id)
     return jsonify({"status": "ok"})
 
 
@@ -218,7 +227,7 @@ def predictive_index():
 @app.get("/api/predictive/<machine_id>")
 @login_required
 def predictive_machine(machine_id):
-    machine = next((item for item in predictive_payload()["machines"] if item["id"] == machine_id.upper()), None)
+    machine = next((item for item in predictive_payload(refresh=False)["machines"] if item["id"] == machine_id.upper()), None)
     if not machine:
         return error("Máquina no encontrada.", 404)
     return jsonify(machine)
@@ -351,6 +360,27 @@ def users_create():
 @app.get("/health")
 def health():
     return jsonify({"status": "ok", "database": database_status(), "mail": {"configured": mail_configured()}})
+
+
+@app.cli.command("capture-machine-readings")
+def capture_machine_readings():
+    """Inserta una lectura simulada para cada máquina activa."""
+    append_snapshot(minimum_interval_seconds=0)
+    click.echo("Lecturas predictivas capturadas correctamente")
+
+
+@app.cli.command("run-reading-collector")
+@click.option("--interval-seconds", type=click.IntRange(min=10), default=lambda: int(os.environ.get("PREDICTIVE_CAPTURE_INTERVAL", "900")), show_default=True)
+def run_reading_collector(interval_seconds):
+    """Ejecuta el colector predictivo de manera continua."""
+    click.echo(f"Colector predictivo iniciado; intervalo={interval_seconds}s", err=True)
+    while True:
+        try:
+            append_snapshot(minimum_interval_seconds=0)
+            click.echo(f"{datetime.now(timezone.utc).isoformat()} · lecturas capturadas", err=True)
+        except Exception as exc:
+            app.logger.exception("Predictive collector failed: %s", exc)
+        time.sleep(interval_seconds)
 
 
 if __name__ == "__main__":
