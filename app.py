@@ -14,6 +14,7 @@ import psycopg
 import click
 from flask import Flask, jsonify, redirect, render_template, request, session, url_for
 from werkzeug.security import check_password_hash, generate_password_hash
+from werkzeug.utils import secure_filename
 
 from database import (
     create_user,
@@ -30,7 +31,7 @@ from database import (
 from mailer import mail_configured, send_password_reset
 from predictive import append_snapshot, predictive_payload
 from machine_manuals import ingest_machine_manuals
-from rag_service import answer_chat
+from rag_service import ALLOWED_DOCUMENT_EXTENSIONS, answer_chat, delete_document, ingest_document, list_documents
 from quality import quality_dashboard
 from oee import oee_dashboard
 from downtime import append_random_downtime, downtime_dashboard, seed_random_downtimes
@@ -45,6 +46,7 @@ app.config.update(
     SESSION_COOKIE_SAMESITE="Lax",
     SESSION_COOKIE_SECURE=os.environ.get("SESSION_COOKIE_SECURE", "0") == "1",
     PERMANENT_SESSION_LIFETIME=timedelta(seconds=int(os.environ.get("SESSION_IDLE_TIMEOUT_SECONDS", "1800"))),
+    MAX_CONTENT_LENGTH=100 * 1024 * 1024,
 )
 
 
@@ -97,19 +99,9 @@ def load_questions():
 def simulated_snapshot():
     data = read_json("production_floor.json")
     data["shift"]["actual_units"] += random.randint(0, 8)
-    data["shift"]["current_rate"] = round(
-        max(0, data["shift"]["current_rate"] + random.uniform(-1.2, 1.2)), 1
-    )
-    data["oee"]["performance"] = round(
-        max(0, min(100, data["oee"]["performance"] + random.uniform(-0.4, 0.4))), 1
-    )
-    data["oee"]["oee"] = round(
-        data["oee"]["availability"]
-        * data["oee"]["performance"]
-        * data["oee"]["quality"]
-        / 10000,
-        1,
-    )
+    integrated_oee = oee_dashboard(1, data)["summary"]
+    data["oee"] = {key: integrated_oee[key] for key in ("oee", "availability", "performance", "quality")}
+    data["downtime"]["minutes_today"] = integrated_oee["equivalent_line_downtime"]
     data["shift"]["completion_pct"] = round(
         data["shift"]["actual_units"] / data["shift"]["plan_units"] * 100, 1
     )
@@ -351,6 +343,59 @@ def copilot_chat():
     except Exception:
         app.logger.exception("Error procesando el chat del copiloto")
         return error("No fue posible procesar la consulta.", 500)
+
+
+@app.get("/api/documents")
+@login_required
+def documents_index():
+    try:
+        return jsonify(list_documents())
+    except (psycopg.Error, RuntimeError):
+        return error("No fue posible consultar los documentos indexados.", 503)
+
+
+@app.post("/api/documents")
+@login_required
+def documents_upload():
+    files = [item for item in request.files.getlist("files") if item and item.filename]
+    if not files:
+        return error("Selecciona al menos un documento.")
+    if len(files) > 20:
+        return error("Puedes cargar hasta 20 documentos por operación.")
+    results = []
+    try:
+        for uploaded in files:
+            filename = secure_filename(uploaded.filename)
+            extension = Path(filename).suffix.lower()
+            if not filename or extension not in ALLOWED_DOCUMENT_EXTENSIONS:
+                raise ValueError(f"Archivo no compatible: {uploaded.filename}")
+            raw = uploaded.read()
+            if not raw:
+                raise ValueError(f"El archivo {filename} está vacío.")
+            if len(raw) > 25 * 1024 * 1024:
+                raise ValueError(f"El archivo {filename} supera el límite de 25 MB.")
+            results.append({"document_name": filename, "chunks": ingest_document(filename, raw)})
+        return jsonify({"documents": results, "total": len(results)}), 201
+    except ValueError as exc:
+        return error(str(exc))
+    except RuntimeError as exc:
+        app.logger.exception("Ollama no disponible durante la indexación")
+        return error(str(exc), 503)
+    except Exception:
+        app.logger.exception("No fue posible indexar documentos")
+        return error("No fue posible procesar los documentos.", 500)
+
+
+@app.delete("/api/documents/<path:document_name>")
+@login_required
+def documents_delete(document_name):
+    try:
+        deleted = delete_document(secure_filename(document_name))
+        if not deleted:
+            return error("Documento no encontrado.", 404)
+        return jsonify({"deleted_chunks": deleted})
+    except (psycopg.Error, RuntimeError):
+        return error("No fue posible eliminar el documento.", 503)
 
 
 @app.get("/api/shift-handover")

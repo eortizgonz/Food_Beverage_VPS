@@ -3,8 +3,15 @@ import json
 import os
 import urllib.error
 import urllib.request
+from io import BytesIO
+from pathlib import Path
 
 from database import get_connection
+from docx import Document
+from openpyxl import load_workbook
+from pypdf import PdfReader
+from pptx import Presentation
+import xlrd
 
 
 def _ollama(path, payload, timeout=None):
@@ -35,23 +42,71 @@ def _vector_literal(values):
     return "[" + ",".join(f"{float(value):.9g}" for value in values) + "]"
 
 
-def ingest_text(document_name, text):
-    records = _chunks(text)
+ALLOWED_DOCUMENT_EXTENSIONS = {".pdf", ".docx", ".xlsx", ".xls", ".pptx", ".txt", ".md", ".csv", ".json", ".html", ".htm", ".xml"}
+
+
+def ingest_pages(document_name, pages, raw=None):
+    records = [(page, index, chunk) for page, text in pages for index, chunk in enumerate(_chunks(text))]
     if not records:
         raise ValueError("El manual no contiene texto indexable.")
-    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
-    embeddings = _embed(records)
+    digest = hashlib.sha256(raw if raw is not None else "\n".join(text for _, text in pages).encode("utf-8")).hexdigest()
+    embeddings = _embed([record[2] for record in records])
     with get_connection() as connection:
         with connection.cursor() as cursor:
             cursor.execute("DELETE FROM sop_chunks WHERE document_name=%s", (document_name,))
-            for index, (content, embedding) in enumerate(zip(records, embeddings)):
+            for (page, index, content), embedding in zip(records, embeddings):
                 cursor.execute(
                     """INSERT INTO sop_chunks
                     (document_hash,document_name,page,chunk_index,content,embedding)
-                    VALUES (%s,%s,1,%s,%s,%s::vector)""",
-                    (digest, document_name, index, content, _vector_literal(embedding)),
+                    VALUES (%s,%s,%s,%s,%s,%s::vector)""",
+                    (digest, document_name, page, index, content, _vector_literal(embedding)),
                 )
     return len(records)
+
+
+def ingest_text(document_name, text):
+    return ingest_pages(document_name, [(1, text)], text.encode("utf-8"))
+
+
+def extract_document(filename, raw):
+    extension = Path(filename).suffix.lower()
+    if extension not in ALLOWED_DOCUMENT_EXTENSIONS:
+        raise ValueError(f"Tipo de archivo no compatible: {extension or 'sin extensión'}")
+    stream = BytesIO(raw)
+    if extension == ".pdf":
+        return [(index + 1, page.extract_text() or "") for index, page in enumerate(PdfReader(stream).pages)]
+    if extension == ".docx":
+        document = Document(stream)
+        return [(1, "\n".join(paragraph.text for paragraph in document.paragraphs))]
+    if extension == ".xlsx":
+        workbook = load_workbook(stream, read_only=True, data_only=True)
+        return [(index + 1, f"Hoja: {sheet.title}\n" + "\n".join(" | ".join(str(value) for value in row if value is not None) for row in sheet.iter_rows(values_only=True))) for index, sheet in enumerate(workbook.worksheets)]
+    if extension == ".xls":
+        workbook = xlrd.open_workbook(file_contents=raw)
+        return [(index + 1, f"Hoja: {sheet.name}\n" + "\n".join(" | ".join(str(sheet.cell_value(row, column)) for column in range(sheet.ncols)) for row in range(sheet.nrows))) for index, sheet in enumerate(workbook.sheets())]
+    if extension == ".pptx":
+        presentation = Presentation(stream)
+        return [(index + 1, "\n".join(shape.text for shape in slide.shapes if hasattr(shape, "text"))) for index, slide in enumerate(presentation.slides)]
+    return [(1, raw.decode("utf-8", errors="replace"))]
+
+
+def ingest_document(filename, raw):
+    return ingest_pages(filename, extract_document(filename, raw), raw)
+
+
+def list_documents():
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute("""SELECT document_name,count(*) AS chunks,min(created_at) AS indexed_at
+                FROM sop_chunks GROUP BY document_name ORDER BY document_name""")
+            return cursor.fetchall()
+
+
+def delete_document(document_name):
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute("DELETE FROM sop_chunks WHERE document_name=%s RETURNING id", (document_name,))
+            return len(cursor.fetchall())
 
 
 def retrieve(question, limit=3, document_name=None):
@@ -136,7 +191,8 @@ def answer_predictive(question):
     ]
     for machine in rows:
         factors = ", ".join(f"{factor['label']} {factor['contribution']} puntos" for factor in machine["factors"][:2])
-        context.append(f"{machine['id']} {machine['name']}: riesgo {machine['risk']}%, estado {machine['status']}, vibración {machine['vibration']} mm/s, temperatura {machine['temperature']} °C, corriente {machine['current']} A, RPM {machine['rpm']}, presión {machine['pressure']} bar. Factores: {factors}.")
+        limits = machine["limits"]
+        context.append(f"{machine['id']} {machine['name']}: riesgo {machine['risk']}%, estado {machine['status']}, vibración {machine['vibration']} mm/s (límite {limits['vibration']}), temperatura {machine['temperature']} °C (límite {limits['temperature']}), corriente {machine['current']} A (nominal {limits['current']}), RPM {machine['rpm']} (nominal {limits['nominal_rpm']}), presión {machine['pressure']} bar (máxima {limits['pressure']}), uso {machine['usage_hours']} h (máximo {limits['usage_hours']}). Factores calculados: {factors}.")
     manual_chunks = retrieve(question, limit=3)
     sources = [f"PostgreSQL · machine_readings · {payload['generated_at']}"]
     evidence = []
@@ -145,7 +201,10 @@ def answer_predictive(question):
         evidence.append(f"[{label}] {chunk['content']}")
         if label not in sources:
             sources.append(label)
-    prompt = f"""Responde únicamente con los datos y manuales suministrados. Distingue lectura medida, interpretación y acción recomendada. No inventes valores ni autorices intervenir sin parada segura/LOTO. Recomienda validación humana. Usa texto plano sin Markdown. Máximo 180 palabras.
+    prompt = f"""Responde únicamente con los datos y límites suministrados. Distingue lectura medida, comparación con límite, interpretación y acción recomendada.
+Está prohibido inventar, recalcular o mencionar cualquier número que no aparezca en DATOS ACTUALES. No denomines "límite" al riesgo promedio ni a la contribución de un factor.
+Si un valor o límite no está disponible, di que no está disponible. No autorices intervenir sin parada segura/LOTO. Recomienda validación humana.
+Usa texto plano sin Markdown, máximo 220 palabras, oraciones breves y termina completamente la última oración.
 
 DATOS ACTUALES:
 {chr(10).join(context)}
@@ -156,9 +215,9 @@ MANUALES RECUPERADOS:
 PREGUNTA: {question}"""
     result = _ollama("/api/chat", {
         "model": os.environ.get("OLLAMA_CHAT_MODEL", "llama3.1:8b"),
-        "messages": [{"role": "system", "content": "Eres un copiloto de mantenimiento predictivo para una planta de alimentos."}, {"role": "user", "content": prompt}],
+        "messages": [{"role": "system", "content": "Eres un copiloto de mantenimiento predictivo para una planta de alimentos. Debes ser fiel a los datos proporcionados y nunca fabricar cifras o límites."}, {"role": "user", "content": prompt}],
         "stream": False, "keep_alive": "10m",
-        "options": {"temperature": 0.1, "num_ctx": 4096, "num_predict": int(os.environ.get("OLLAMA_MAX_TOKENS", "220"))},
+        "options": {"temperature": 0.0, "num_ctx": 4096, "num_predict": int(os.environ.get("PREDICTIVE_CHAT_MAX_TOKENS", "360"))},
     })
     return result["message"]["content"], sources
 

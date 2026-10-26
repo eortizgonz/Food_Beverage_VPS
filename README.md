@@ -64,6 +64,8 @@ python -m flask --app app ingest-machine-manuals
 
 En Docker/VPS ejecuta la indexación con `docker compose run --rm app python -m flask --app app ingest-machine-manuals`.
 
+La vista **Documentos RAG** permite cargar hasta 20 archivos por operación y 25 MB por archivo. Formatos compatibles: PDF, DOCX, XLSX, XLS, PPTX, TXT, Markdown, CSV, JSON, HTML y XML. Los PDF deben contener texto extraíble; los documentos escaneados requieren una etapa OCR adicional.
+
 ## Siguiente etapa
 
 Sustituir `data/production_floor.json` por datos de historiador, PLC/MES o SAP y agregar autenticación, persistencia de eventos, catálogo de causas, auditoría y flujos de aprobación.
