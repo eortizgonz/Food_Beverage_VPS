@@ -48,8 +48,21 @@ docker compose ps
 docker compose logs migrate
 docker compose logs --tail=100 app
 docker compose logs --tail=100 collector
+docker compose logs --tail=100 downtime-collector
 curl http://127.0.0.1:5000/health
 ```
+
+### Activar el copiloto RAG
+
+Ollama debe escuchar en una interfaz accesible desde Docker y tener los modelos configurados en `.env`. Después de levantar la aplicación:
+
+```bash
+ollama pull llama3.1:8b
+ollama pull nomic-embed-text
+docker compose run --rm app python -m flask --app app ingest-machine-manuals
+```
+
+La carga genera e indexa un manual por cada máquina activa. Se repite únicamente cuando cambien los manuales, máquinas o el modelo de embeddings.
 
 Abrir `http://IP_DEL_VPS:5000`. En producción se recomienda colocar Nginx o Caddy delante del puerto 5000 y habilitar HTTPS.
 
@@ -82,6 +95,7 @@ cat backup/ARCHIVO.dump | docker compose exec -T db sh -c 'pg_restore -U "$POSTG
 ```bash
 docker compose logs -f app
 docker compose logs -f collector
+docker compose logs -f downtime-collector
 docker compose restart app
 docker compose stop
 docker compose up -d

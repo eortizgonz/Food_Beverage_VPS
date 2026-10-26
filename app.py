@@ -29,6 +29,11 @@ from database import (
 )
 from mailer import mail_configured, send_password_reset
 from predictive import append_snapshot, predictive_payload
+from machine_manuals import ingest_machine_manuals
+from rag_service import answer_chat
+from quality import quality_dashboard
+from oee import oee_dashboard
+from downtime import append_random_downtime, downtime_dashboard, seed_random_downtimes
 
 
 BASE = Path(__file__).parent
@@ -39,7 +44,28 @@ app.config.update(
     SESSION_COOKIE_HTTPONLY=True,
     SESSION_COOKIE_SAMESITE="Lax",
     SESSION_COOKIE_SECURE=os.environ.get("SESSION_COOKIE_SECURE", "0") == "1",
+    PERMANENT_SESSION_LIFETIME=timedelta(seconds=int(os.environ.get("SESSION_IDLE_TIMEOUT_SECONDS", "1800"))),
 )
+
+
+@app.before_request
+def enforce_idle_session_timeout():
+    if "user_id" not in session:
+        return None
+    now = datetime.now(timezone.utc)
+    last_activity = session.get("last_activity")
+    if last_activity:
+        try:
+            elapsed = (now - datetime.fromisoformat(last_activity)).total_seconds()
+        except (TypeError, ValueError):
+            elapsed = 0
+        if elapsed > int(os.environ.get("SESSION_IDLE_TIMEOUT_SECONDS", "1800")):
+            session.clear()
+            if request.path.startswith("/api/"):
+                return error("La sesión expiró por inactividad.", 401)
+            return redirect(url_for("auth_page"))
+    session["last_activity"] = now.isoformat()
+    return None
 
 
 def login_required(view):
@@ -129,6 +155,7 @@ def auth_login():
     session.clear()
     session["user_id"] = user["id"]
     session["user_name"] = user["name"]
+    session["last_activity"] = datetime.now(timezone.utc).isoformat()
     session.permanent = bool(body.get("remember"))
     app.logger.info("Login successful: user_id=%s", user["id"])
     return jsonify({"id": user["id"], "name": user["name"], "username": user["username"]})
@@ -233,6 +260,33 @@ def predictive_machine(machine_id):
     return jsonify(machine)
 
 
+@app.get("/api/quality")
+@login_required
+def quality_summary():
+    days = request.args.get("days", 7, type=int)
+    return jsonify(quality_dashboard(days))
+
+
+@app.get("/api/oee")
+@login_required
+def oee_summary():
+    days = request.args.get("days", 7, type=int)
+    return jsonify(oee_dashboard(days))
+
+
+@app.get("/api/downtime")
+@login_required
+def downtime_summary():
+    try:
+        return jsonify(downtime_dashboard(
+            request.args.get("days", 30, type=int), request.args.get("date_from"),
+            request.args.get("date_to"), request.args.get("machine"),
+            request.args.get("category"), request.args.get("status"),
+        ))
+    except ValueError:
+        return error("El rango de fechas no es válido.")
+
+
 @app.get("/api/kpis")
 @login_required
 def kpis():
@@ -271,6 +325,32 @@ def answer():
         "value": "Evita presentar una inferencia como un hecho medido.",
         "source": "Sin fuente disponible",
     })
+
+
+@app.post("/api/copilot/chat")
+@login_required
+def copilot_chat():
+    body = request.get_json(silent=True) or {}
+    question = body.get("question", "").strip() if isinstance(body.get("question"), str) else ""
+    mode = body.get("mode", "auto")
+    if len(question) < 5 or len(question) > 2000:
+        return error("La pregunta debe tener entre 5 y 2000 caracteres.")
+    if mode not in {"auto", "manuals", "troubleshooting", "predictive"}:
+        return error("Modo de consulta inválido.")
+    try:
+        response, sources, resolved_mode = answer_chat(question, mode)
+        return jsonify({"answer": response, "sources": sources, "mode": resolved_mode})
+    except ValueError as exc:
+        return error(str(exc))
+    except RuntimeError as exc:
+        app.logger.exception("Ollama no disponible")
+        return error(str(exc), 503)
+    except (psycopg.Error, RuntimeError):
+        app.logger.exception("Error de base de datos en el copiloto")
+        return error("No fue posible consultar la base documental.", 503)
+    except Exception:
+        app.logger.exception("Error procesando el chat del copiloto")
+        return error("No fue posible procesar la consulta.", 500)
 
 
 @app.get("/api/shift-handover")
@@ -367,6 +447,37 @@ def capture_machine_readings():
     """Inserta una lectura simulada para cada máquina activa."""
     append_snapshot(minimum_interval_seconds=0)
     click.echo("Lecturas predictivas capturadas correctamente")
+
+
+@app.cli.command("ingest-machine-manuals")
+def ingest_machine_manuals_command():
+    """Genera e indexa en pgvector un manual para cada máquina activa."""
+    machines, chunks = ingest_machine_manuals()
+    click.echo(f"Manuales indexados: {machines} máquinas, {chunks} fragmentos")
+
+
+@app.cli.command("seed-random-downtimes")
+@click.option("--count", type=click.IntRange(min=1, max=1000), default=90, show_default=True)
+@click.option("--days", type=click.IntRange(min=1, max=90), default=30, show_default=True)
+def seed_random_downtimes_command(count, days):
+    """Genera un histórico aleatorio de paradas en PostgreSQL."""
+    inserted = seed_random_downtimes(count, days)
+    click.echo(f"Paradas aleatorias insertadas: {inserted}")
+
+
+@app.cli.command("run-downtime-collector")
+@click.option("--interval-seconds", type=click.IntRange(min=10), default=lambda: int(os.environ.get("DOWNTIME_CAPTURE_INTERVAL", "900")), show_default=True)
+@click.option("--probability", type=click.FloatRange(min=0, max=1), default=lambda: float(os.environ.get("DOWNTIME_EVENT_PROBABILITY", "0.35")), show_default=True)
+def run_downtime_collector(interval_seconds, probability):
+    """Genera paradas aleatorias periódicamente."""
+    click.echo(f"Colector de paradas iniciado; intervalo={interval_seconds}s; probabilidad={probability}", err=True)
+    while True:
+        try:
+            inserted = append_random_downtime(probability)
+            click.echo(f"{datetime.now(timezone.utc).isoformat()} · paradas insertadas={inserted}", err=True)
+        except Exception as exc:
+            app.logger.exception("Downtime collector failed: %s", exc)
+        time.sleep(interval_seconds)
 
 
 @app.cli.command("run-reading-collector")

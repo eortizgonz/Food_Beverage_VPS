@@ -6,8 +6,8 @@ from database import get_connection
 
 
 WEIGHTS = {
-    "usage": 0.12, "vibration": 0.25, "temperature": 0.20,
-    "current": 0.17, "rpm": 0.14, "pressure": 0.12,
+    "vibration": 0.25, "temperature": 0.20, "current": 0.17,
+    "rpm": 0.14, "usage": 0.12, "pressure": 0.12,
 }
 LABELS = {
     "usage": "Horas de uso", "vibration": "Vibración", "temperature": "Temperatura",

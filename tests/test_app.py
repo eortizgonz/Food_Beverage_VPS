@@ -1,4 +1,6 @@
 import unittest
+from unittest.mock import patch
+from datetime import datetime, timedelta, timezone
 
 from app import app, load_questions
 
@@ -24,6 +26,13 @@ class AppTestCase(unittest.TestCase):
         self.assertEqual(self.client.get("/").status_code, 302)
         self.assertEqual(self.client.get("/api/floor").status_code, 401)
 
+    def test_session_expires_after_idle_timeout(self):
+        with self.client.session_transaction() as session:
+            session["last_activity"] = (datetime.now(timezone.utc) - timedelta(seconds=1801)).isoformat()
+        response = self.client.get("/api/floor")
+        self.assertEqual(response.status_code, 401)
+        self.assertIn("inactividad", response.get_json()["error"])
+
     def test_password_recovery_pages_and_validation(self):
         self.assertEqual(self.client.get("/forgot-password").status_code, 200)
         response = self.client.post("/api/auth/forgot-password", json={"email": "invalid"})
@@ -44,6 +53,14 @@ class AppTestCase(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertIn("error", response.get_json())
 
+    def test_copilot_chat_validation_and_contract(self):
+        self.assertEqual(self.client.post("/api/copilot/chat", json={}).status_code, 400)
+        with patch("app.answer_chat", return_value=("Respuesta basada en manual.", ["MAN-EQP-PU-170 · página 1"], "manuals")):
+            response = self.client.post("/api/copilot/chat", json={"question": "¿Qué reviso en PU-170?", "mode": "auto"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["mode"], "manuals")
+        self.assertTrue(response.get_json()["sources"])
+
     def test_known_question(self):
         response = self.client.post(
             "/api/answer", json={"question": "¿Cuál es el cuello de botella?"}
@@ -56,11 +73,52 @@ class AppTestCase(unittest.TestCase):
         for key in ("context", "shift", "oee", "quality", "downtime", "alerts", "actions"):
             self.assertIn(key, payload)
 
+    def test_quality_dashboard_contract(self):
+        response = self.client.get("/api/quality?days=30")
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload["period_days"], 30)
+        self.assertGreater(len(payload["lots"]), 0)
+        self.assertEqual(len(payload["losses"]), 5)
+        self.assertLessEqual(len(payload["trend"]), 14)
+        for key in ("quality", "fpy", "rejected_units", "held_lots", "lots", "total_units"):
+            self.assertIn(key, payload["summary"])
+
+    def test_oee_dashboard_contract(self):
+        response = self.client.get("/api/oee?days=7")
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload["period_days"], 7)
+        self.assertEqual(len(payload["machines"]), 20)
+        self.assertEqual(len(payload["losses"]), 5)
+        for key in ("oee", "availability", "performance", "quality", "runs"):
+            self.assertIn(key, payload["summary"])
+        for row in payload["machines"]:
+            expected = round(row["availability"] * row["performance"] * row["quality"] / 10000, 1)
+            self.assertEqual(row["oee"], expected)
+
+    def test_downtime_filters_and_contract(self):
+        response = self.client.get("/api/downtime?days=30")
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(len(payload["options"]["machines"]), 20)
+        self.assertGreater(len(payload["events"]), 0)
+        machine = payload["events"][0]["machine_code"]
+        filtered = self.client.get(f"/api/downtime?days=30&machine={machine}").get_json()
+        self.assertTrue(all(event["machine_code"] == machine for event in filtered["events"]))
+        for event in payload["events"]:
+            for key in ("started_at", "ended_at", "duration_minutes", "category", "cause", "status", "planned"):
+                self.assertIn(key, event)
+
     def test_predictive_has_twenty_machines_and_detail(self):
         response = self.client.get("/api/predictive")
         self.assertEqual(response.status_code, 200)
         payload = response.get_json()
         self.assertEqual(len(payload["machines"]), 20)
+        self.assertEqual(
+            [(item["label"], item["weight"]) for item in payload["weights"]],
+            [("Vibración", 25), ("Temperatura", 20), ("Corriente", 17), ("Desviación de RPM", 14), ("Horas de uso", 12), ("Presión", 12)],
+        )
         self.assertEqual(
             payload["summary"]["healthy"] + payload["summary"]["warning"] + payload["summary"]["critical"],
             20,

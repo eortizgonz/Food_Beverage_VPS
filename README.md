@@ -48,6 +48,22 @@ Configura `MAIL_USERNAME` y `MAIL_APP_PASSWORD` en `.env`. Se utiliza Gmail SMTP
 
 El servicio Docker `collector` inserta una lectura simulada por máquina cada 900 segundos (15 minutos). El dashboard consulta nuevas lecturas sin escribir en la base. La frecuencia se configura con `PREDICTIVE_CAPTURE_INTERVAL`.
 
+El servicio `downtime-collector` evalúa cada 900 segundos si debe generar una parada y la guarda en `machine_downtime_events`. La probabilidad se configura con `DOWNTIME_EVENT_PROBABILITY` (`0.35` equivale a 35%). Para crear el histórico inicial: `python -m flask --app app seed-random-downtimes --count 90 --days 30`.
+
+## Copiloto RAG y manuales
+
+El chat flotante usa Ollama y PostgreSQL/pgvector. Genera un manual técnico contextualizado para cada una de las 20 máquinas y recupera los fragmentos más cercanos antes de responder.
+
+Instala los modelos y carga los manuales una vez:
+
+```bash
+ollama pull llama3.1:8b
+ollama pull nomic-embed-text
+python -m flask --app app ingest-machine-manuals
+```
+
+En Docker/VPS ejecuta la indexación con `docker compose run --rm app python -m flask --app app ingest-machine-manuals`.
+
 ## Siguiente etapa
 
 Sustituir `data/production_floor.json` por datos de historiador, PLC/MES o SAP y agregar autenticación, persistencia de eventos, catálogo de causas, auditoría y flujos de aprobación.
