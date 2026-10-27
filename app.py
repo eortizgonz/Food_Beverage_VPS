@@ -9,6 +9,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from functools import wraps
 from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import psycopg
 import click
@@ -25,7 +26,12 @@ from database import (
     find_user_by_email,
     find_user_for_login,
     get_public_user,
+    get_current_work_shift,
     list_users,
+    list_work_shifts,
+    create_work_shift,
+    update_work_shift,
+    delete_work_shift,
     password_reset_token_is_valid,
 )
 from mailer import mail_configured, send_password_reset
@@ -98,6 +104,28 @@ def load_questions():
 
 def simulated_snapshot():
     data = read_json("production_floor.json")
+    try:
+        plant_timezone = ZoneInfo(os.environ.get("APP_TIMEZONE", "America/Bogota"))
+    except ZoneInfoNotFoundError:
+        plant_timezone = ZoneInfo("America/Bogota")
+    plant_now = datetime.now(plant_timezone)
+    try:
+        current_shift = get_current_work_shift(plant_now.strftime("%H:%M:%S"))
+    except (psycopg.Error, RuntimeError):
+        current_shift = None
+    if current_shift:
+        data["context"]["shift"] = (
+            f"{current_shift['name']} · {current_shift['start_time']}–{current_shift['end_time']}"
+        )
+        data["shift"]["target_end"] = current_shift["end_time"]
+        projected = datetime.strptime(current_shift["end_time"], "%H:%M") + timedelta(minutes=27)
+        data["shift"]["projected_end"] = projected.strftime("%H:%M")
+        data["shift"]["work_shift_id"] = current_shift["id"]
+    else:
+        data["context"]["shift"] = "Sin turno activo"
+        data["shift"]["target_end"] = "—"
+        data["shift"]["projected_end"] = "—"
+        data["shift"]["work_shift_id"] = None
     data["shift"]["actual_units"] += random.randint(0, 8)
     integrated_oee = oee_dashboard(1, data)["summary"]
     data["oee"] = {key: integrated_oee[key] for key in ("oee", "availability", "performance", "quality")}
@@ -105,12 +133,33 @@ def simulated_snapshot():
     data["shift"]["completion_pct"] = round(
         data["shift"]["actual_units"] / data["shift"]["plan_units"] * 100, 1
     )
-    data["generated_at"] = datetime.now().astimezone().isoformat(timespec="seconds")
+    data["generated_at"] = plant_now.isoformat(timespec="seconds")
     return data
 
 
 def error(message, status=400):
     return jsonify({"error": message}), status
+
+
+def work_shift_values(body):
+    code = body.get("code", "").strip().upper() if isinstance(body.get("code"), str) else ""
+    name = body.get("name", "").strip() if isinstance(body.get("name"), str) else ""
+    start_time = body.get("start_time", "").strip() if isinstance(body.get("start_time"), str) else ""
+    end_time = body.get("end_time", "").strip() if isinstance(body.get("end_time"), str) else ""
+    if not re.fullmatch(r"[A-Z0-9_-]{1,20}", code):
+        raise ValueError("El código debe tener entre 1 y 20 caracteres (letras, números, guion o guion bajo).")
+    if not name or len(name) > 60:
+        raise ValueError("El nombre es obligatorio y admite máximo 60 caracteres.")
+    if not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", start_time) or not re.fullmatch(
+        r"(?:[01]\d|2[0-3]):[0-5]\d", end_time
+    ):
+        raise ValueError("Las horas deben tener formato HH:MM.")
+    start_minutes = int(start_time[:2]) * 60 + int(start_time[3:])
+    end_minutes = int(end_time[:2]) * 60 + int(end_time[3:])
+    planned_minutes = (end_minutes - start_minutes) % (24 * 60)
+    if planned_minutes == 0:
+        raise ValueError("El turno debe tener una duración mayor a cero y menor a 24 horas.")
+    return code, name, start_time, end_time, planned_minutes, bool(body.get("active", True))
 
 
 @app.get("/")
@@ -396,6 +445,58 @@ def documents_delete(document_name):
         return jsonify({"deleted_chunks": deleted})
     except (psycopg.Error, RuntimeError):
         return error("No fue posible eliminar el documento.", 503)
+
+
+@app.get("/api/shifts")
+@login_required
+def shifts_index():
+    try:
+        return jsonify(list_work_shifts())
+    except (psycopg.Error, RuntimeError):
+        return error("No fue posible consultar los turnos.", 503)
+
+
+@app.post("/api/shifts")
+@login_required
+def shifts_create():
+    try:
+        values = work_shift_values(request.get_json(silent=True) or {})
+        return jsonify(create_work_shift(*values)), 201
+    except ValueError as exc:
+        return error(str(exc))
+    except psycopg.errors.UniqueViolation:
+        return error("Ya existe un turno con ese código.", 409)
+    except (psycopg.Error, RuntimeError):
+        return error("No fue posible crear el turno.", 503)
+
+
+@app.put("/api/shifts/<int:shift_id>")
+@login_required
+def shifts_update(shift_id):
+    try:
+        shift = update_work_shift(shift_id, *work_shift_values(request.get_json(silent=True) or {}))
+        if not shift:
+            return error("Turno no encontrado.", 404)
+        return jsonify(shift)
+    except ValueError as exc:
+        return error(str(exc))
+    except psycopg.errors.UniqueViolation:
+        return error("Ya existe un turno con ese código.", 409)
+    except (psycopg.Error, RuntimeError):
+        return error("No fue posible actualizar el turno.", 503)
+
+
+@app.delete("/api/shifts/<int:shift_id>")
+@login_required
+def shifts_delete(shift_id):
+    try:
+        if not delete_work_shift(shift_id):
+            return error("Turno no encontrado.", 404)
+        return jsonify({"deleted": True, "id": shift_id})
+    except psycopg.errors.ForeignKeyViolation:
+        return error("El turno tiene historial productivo. Desactívalo en lugar de eliminarlo.", 409)
+    except (psycopg.Error, RuntimeError):
+        return error("No fue posible eliminar el turno.", 503)
 
 
 @app.get("/api/shift-handover")

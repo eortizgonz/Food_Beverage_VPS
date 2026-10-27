@@ -3,6 +3,7 @@ import random
 from datetime import datetime, timedelta, timezone
 
 from database import get_connection
+from machine_profiles import diagnostic_for
 
 
 WEIGHTS = {
@@ -17,26 +18,6 @@ CONDITION_PROFILES = [
     0.28, 0.82, 0.48, 0.94, 0.36, 0.69, 0.22, 0.57, 0.76, 0.31,
     0.44, 0.88, 0.25, 0.63, 0.72, 0.39, 0.91, 0.53, 0.18, 0.66,
 ]
-
-MANUALS = {
-    "Transportador": (
-        ["Desalineación de banda o cadena", "Rodamientos con lubricación insuficiente", "Acumulación de producto en guías"],
-        ["Inspeccionar tensión y alineación", "Verificar rodamientos y lubricación", "Limpiar guías según el procedimiento sanitario"],
-    ),
-    "Bomba": (
-        ["Cavitación o entrada de aire", "Desgaste de sello mecánico", "Restricción en succión"],
-        ["Confirmar presión y nivel de alimentación", "Inspeccionar sello y acople", "Verificar válvulas y filtros sanitarios"],
-    ),
-    "Llenadora": (
-        ["Desgaste del tren de accionamiento", "Dosificador fuera de ajuste", "Acumulación o fricción en carrusel"],
-        ["Validar dosificación y velocidad", "Inspeccionar transmisión y rodamientos", "Confirmar limpieza y lubricación autorizada"],
-    ),
-    "Sistema CIP": (
-        ["Bomba CIP trabajando fuera de curva", "Restricción de retorno", "Temperatura o presión fuera de régimen"],
-        ["Validar caudal, presión y temperatura", "Inspeccionar bomba y válvulas", "Verificar secuencia CIP y retorno"],
-    ),
-}
-
 
 def rule_score(ratio):
     ratio = max(0.0, ratio)
@@ -141,14 +122,6 @@ def append_snapshot(minimum_interval_seconds=10):
                 insert_reading(cursor, machine, now, values_from_condition(machine, level, rng, usage, now.timestamp() / 86400 * math.tau))
 
 
-def manual_diagnosis(machine, factors):
-    causes, actions = MANUALS.get(machine["machine_type"], (
-        ["Desgaste mecánico progresivo", "Carga operacional fuera del régimen esperado", "Sensor o elemento de transmisión con desviación"],
-        ["Validar las lecturas con instrumento patrón", "Inspeccionar rodamientos, acoples y transmisión", "Revisar el plan preventivo y la ventana de intervención"],
-    ))
-    return {"diagnosis": f"{factors[0]['label']} y {factors[1]['label']} concentran el mayor aporte al índice.", "causes": causes, "actions": actions, "source": f"Perfil técnico simulado · {machine['machine_type']}"}
-
-
 def predictive_payload(refresh=False):
     if refresh:
         append_snapshot()
@@ -170,7 +143,7 @@ def predictive_payload(refresh=False):
                 trend = cursor.fetchone()
                 actions = {"critical": "Programar inspección prioritaria y preparar mantenimiento en la próxima ventana disponible.", "warning": "Aumentar la frecuencia de monitoreo y revisar los factores dominantes.", "healthy": "Mantener el plan preventivo y la frecuencia normal de monitoreo."}
                 limits = {"usage_hours": row["max_usage_hours"], "vibration": row["max_vibration"], "temperature": row["max_temperature"], "current": row["rated_current"], "nominal_rpm": row["nominal_rpm"], "pressure": row["max_pressure"]}
-                machine = {"id": row["code"], "name": row["name"], "type": row["machine_type"], "area": row["area"], **values, "limits": limits, "risk": row["failure_probability"], "status": row["health_status"], "explanation": row["explanation"], "recorded_at": row["recorded_at"], "factors": factors, "manual": manual_diagnosis(row, factors), "recommended_action": actions[row["health_status"]], "intervention_horizon_days": max(2, int(45 * math.pow(max(1, 100 - row["failure_probability"]) / 100, 1.7))), "trend_24h": {"samples": trend["samples"], "average": round(float(trend["average"] or 0), 1), "minimum": round(float(trend["minimum"] or 0), 1), "maximum": round(float(trend["maximum"] or 0), 1)}}
+                machine = {"id": row["code"], "name": row["name"], "type": row["machine_type"], "area": row["area"], **values, "limits": limits, "risk": row["failure_probability"], "status": row["health_status"], "explanation": row["explanation"], "recorded_at": row["recorded_at"], "factors": factors, "manual": diagnostic_for(row, factors, row["failure_probability"], row["health_status"], values, limits), "recommended_action": actions[row["health_status"]], "intervention_horizon_days": max(2, int(45 * math.pow(max(1, 100 - row["failure_probability"]) / 100, 1.7))), "trend_24h": {"samples": trend["samples"], "average": round(float(trend["average"] or 0), 1), "minimum": round(float(trend["minimum"] or 0), 1), "maximum": round(float(trend["maximum"] or 0), 1)}}
                 machines.append(machine)
     machines.sort(key=lambda item: item["risk"], reverse=True)
     if not machines:

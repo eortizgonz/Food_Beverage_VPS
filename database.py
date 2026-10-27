@@ -184,3 +184,87 @@ def create_user(name, email, username, password_hash):
                 (name, email, username, password_hash),
             )
             return cursor.fetchone()
+
+
+def list_work_shifts():
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT id, code, name,
+                       to_char(start_time, 'HH24:MI') AS start_time,
+                       to_char(end_time, 'HH24:MI') AS end_time,
+                       planned_minutes, active
+                FROM public.work_shifts
+                ORDER BY start_time, code
+                """
+            )
+            return cursor.fetchall()
+
+
+def get_current_work_shift(current_time):
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT id, code, name,
+                       to_char(start_time, 'HH24:MI') AS start_time,
+                       to_char(end_time, 'HH24:MI') AS end_time,
+                       planned_minutes, active
+                FROM public.work_shifts
+                WHERE active = true
+                  AND (
+                    (start_time < end_time AND %s::time >= start_time AND %s::time < end_time)
+                    OR
+                    (start_time > end_time AND (%s::time >= start_time OR %s::time < end_time))
+                  )
+                ORDER BY start_time DESC
+                LIMIT 1
+                """,
+                (current_time, current_time, current_time, current_time),
+            )
+            return cursor.fetchone()
+
+
+def create_work_shift(code, name, start_time, end_time, planned_minutes, active):
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO public.work_shifts
+                    (code, name, start_time, end_time, planned_minutes, active)
+                VALUES (%s, %s, %s, %s, %s, %s)
+                RETURNING id, code, name,
+                          to_char(start_time, 'HH24:MI') AS start_time,
+                          to_char(end_time, 'HH24:MI') AS end_time,
+                          planned_minutes, active
+                """,
+                (code, name, start_time, end_time, planned_minutes, active),
+            )
+            return cursor.fetchone()
+
+
+def update_work_shift(shift_id, code, name, start_time, end_time, planned_minutes, active):
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE public.work_shifts
+                SET code = %s, name = %s, start_time = %s, end_time = %s,
+                    planned_minutes = %s, active = %s
+                WHERE id = %s
+                RETURNING id, code, name,
+                          to_char(start_time, 'HH24:MI') AS start_time,
+                          to_char(end_time, 'HH24:MI') AS end_time,
+                          planned_minutes, active
+                """,
+                (code, name, start_time, end_time, planned_minutes, active, shift_id),
+            )
+            return cursor.fetchone()
+
+
+def delete_work_shift(shift_id):
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute("DELETE FROM public.work_shifts WHERE id = %s RETURNING id", (shift_id,))
+            return cursor.fetchone() is not None

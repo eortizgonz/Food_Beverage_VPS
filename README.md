@@ -2,6 +2,8 @@
 
 MVP orientado al supervisor de piso de una planta de alimentos. Presenta el contexto del turno, plan contra producción real, OEE, velocidad, paradas, controles de calidad e inocuidad, alertas, acciones y entrega de turno.
 
+El turno visible se selecciona automáticamente desde `work_shifts` según la hora actual y `APP_TIMEZONE` (por defecto `America/Bogota`), incluyendo horarios que cruzan medianoche.
+
 Los datos actuales son demostrativos y ninguna acción modifica equipos ni sistemas SAP.
 
 ## Ejecutar localmente
@@ -42,6 +44,10 @@ Configura `MAIL_USERNAME` y `MAIL_APP_PASSWORD` en `.env`. Se utiliza Gmail SMTP
 - `GET /api/questions`: preguntas sugeridas del copiloto.
 - `POST /api/answer`: respuesta basada en reglas y fuentes declaradas.
 - `GET /api/shift-handover`: resumen de entrega de turno.
+- `GET /api/shifts`: lista los turnos de producción.
+- `POST /api/shifts`: crea un turno y calcula su duración.
+- `PUT /api/shifts/<id>`: modifica el horario, nombre o estado de un turno.
+- `DELETE /api/shifts/<id>`: elimina un turno sin historial asociado.
 - `GET /api/users`: usuarios sin hashes de contraseña.
 - `POST /api/users`: creación segura de usuarios.
 - `GET /health`: comprobación del servicio.

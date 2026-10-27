@@ -125,6 +125,49 @@ class AppTestCase(unittest.TestCase):
             self.assertEqual(floor["oee"][key], dashboard["summary"][key])
         self.assertEqual(floor["downtime"]["minutes_today"], dashboard["summary"]["equivalent_line_downtime"])
 
+    def test_work_shift_crud_contract_and_validation(self):
+        shift = {
+            "id": 4, "code": "D", "name": "Turno D", "start_time": "06:30",
+            "end_time": "12:30", "planned_minutes": 360, "active": True,
+        }
+        with patch("app.list_work_shifts", return_value=[shift]):
+            response = self.client.get("/api/shifts")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()[0]["planned_minutes"], 360)
+
+        self.assertEqual(self.client.post("/api/shifts", json={}).status_code, 400)
+        with patch("app.create_work_shift", return_value=shift) as create:
+            response = self.client.post("/api/shifts", json={
+                "code": "d", "name": "Turno D", "start_time": "22:00",
+                "end_time": "06:00", "active": True,
+            })
+        self.assertEqual(response.status_code, 201)
+        create.assert_called_once_with("D", "Turno D", "22:00", "06:00", 480, True)
+
+        with patch("app.update_work_shift", return_value=shift):
+            response = self.client.put("/api/shifts/4", json={
+                "code": "D", "name": "Turno D", "start_time": "06:30",
+                "end_time": "12:30", "active": False,
+            })
+        self.assertEqual(response.status_code, 200)
+
+        with patch("app.delete_work_shift", return_value=True):
+            response = self.client.delete("/api/shifts/4")
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.get_json()["deleted"])
+
+    def test_floor_displays_shift_resolved_from_current_time(self):
+        active = {
+            "id": 3, "code": "C", "name": "Turno C", "start_time": "22:00",
+            "end_time": "06:00", "planned_minutes": 480, "active": True,
+        }
+        with patch("app.get_current_work_shift", return_value=active):
+            payload = self.client.get("/api/floor").get_json()
+        self.assertEqual(payload["context"]["shift"], "Turno C · 22:00–06:00")
+        self.assertEqual(payload["shift"]["target_end"], "06:00")
+        self.assertEqual(payload["shift"]["projected_end"], "06:27")
+        self.assertEqual(payload["shift"]["work_shift_id"], 3)
+
     def test_downtime_filters_and_contract(self):
         response = self.client.get("/api/downtime?days=30")
         self.assertEqual(response.status_code, 200)
@@ -156,6 +199,12 @@ class AppTestCase(unittest.TestCase):
         self.assertEqual(detail.status_code, 200)
         self.assertEqual(len(detail.get_json()["factors"]), 6)
         self.assertEqual(set(detail.get_json()["limits"]), {"usage_hours", "vibration", "temperature", "current", "nominal_rpm", "pressure"})
+        manuals = [machine["manual"] for machine in payload["machines"]]
+        self.assertEqual(len({manual["source"] for manual in manuals}), 20)
+        self.assertEqual(len({manual["diagnosis"] for manual in manuals}), 20)
+        self.assertTrue(all(len(manual["causes"]) == 3 for manual in manuals))
+        self.assertTrue(all(len(manual["actions"]) == 3 for manual in manuals))
+        self.assertTrue(all(machine["id"] in machine["manual"]["diagnosis"] for machine in payload["machines"]))
 
     def test_unknown_action_is_rejected(self):
         self.assertEqual(self.client.get("/api/button-execute/sap").status_code, 404)
